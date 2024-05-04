@@ -1,0 +1,7 @@
+name: moonlighter_pricing_env
+dependencies:
+- python
+- numpy
+- pandas
+- jupyter
+- matplotlib
