@@ -207,6 +207,17 @@ def initialize_price_bound_history(price_bounds):
                 :low,
                 :high)""",
         data=price_item_data)
+def add_price_reaction_bounds(price_reaction_bounds):
+    execute_many_queries(
+        """
+        insert into price_reaction_bounds values(
+            :item,
+            :cheap_upper,
+            :perfect_upper,
+            :expensive_upper)
+        """,
+        price_reaction_bounds)
+
 
 if __name__ == '__main__':
     clear_database()
@@ -231,10 +242,28 @@ if __name__ == '__main__':
         '2|275': [
             'broken_sword', 'ancient_pot', 'crystallized_energy',
             'glass_lenses', 'golem_core', 'iron_bar', 'root', 'teeth_stone', 'vine']})
+    add_price_reaction_bounds(
+        price_reaction_bounds=(
+            pd.DataFrame(
+                [
+                    ['broken_sword', 134, 165, 173],
+                    ['crystallized_energy', 89, 110, 115],
+                    ['glass_lenses', 89, 110, 115],
+                    ['gold_runes', 269, 330, 345],
+                    ['golem_core', 89, 110, 115],
+                    ['hardened_steel', 269, 330, 345],
+                    ['iron_bar', 21, 28, 30],
+                    ['root', 3, 6, 8],
+                    ['teeth_stone', 3, 6, 8],
+                    ['vine', 0, 3, 5]],
+                columns=[
+                    'item', 'cheap_upper', 'perfect_upper',
+                    'expensive_upper'])
+            .to_dict('records')))
     print(
         query_data(
             """
-            select * from price_bound_history
+            select * from price_reaction_bounds
             """
         )
     )
