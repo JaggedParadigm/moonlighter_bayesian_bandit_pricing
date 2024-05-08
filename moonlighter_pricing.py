@@ -138,12 +138,68 @@ def initialize_database():
         """)
 def pipe(data, *functions):
     return reduce(lambda a, x: x(a), functions, data)
+def execute_many_queries(query, data):
+    return (
+        transact_w_database(
+            lambda con, cursor: (
+                cursor.executemany(
+                    query,
+                    data))))
+def bulk_update_inventory_changes(item_changes):
+    execute_many_queries(
+        query=f"""
+            insert into inventory_changes values(
+                :item,
+                :change)""",
+        data=[
+            {
+                'item': item,
+                'change': change}
+            for item, change in item_changes.items()])
+def update_inventory():
+    execute_sqlite_script(
+        """
+        pragma foreign_keys = on;
+
+        drop table if exists inventory;
+
+        create table inventory as
+            select
+                item,
+                sum(change) as count
+            from inventory_changes
+            group by
+                item
+            having
+                count >= 0;
+        """)
+def add_items_2_inventory(item_counts: dict):
+    bulk_update_inventory_changes(
+        item_changes=item_counts)
+    update_inventory()
+
 
 if __name__ == '__main__':
     clear_database()
     initialize_database()
-
     initialize_shelves(shelf_count=4)
+    item_count = 20
+    add_items_2_inventory(
+        item_counts={
+            'gold_runes': item_count,
+            'broken_sword': item_count,
+            'vine': item_count,
+            'root': item_count,
+            'hardened_steel': item_count,
+            'glass_lenses': item_count,
+            'teeth_stone': item_count,
+            'iron_bar': item_count,
+            'crystallized_energy': item_count,
+            'golem_core': item_count})
     print(
-    get_current_tables()
+        query_data(
+            """
+            select * from inventory_changes
+            """
+        )
     )
