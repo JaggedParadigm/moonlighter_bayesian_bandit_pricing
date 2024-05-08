@@ -177,7 +177,36 @@ def add_items_2_inventory(item_counts: dict):
     bulk_update_inventory_changes(
         item_changes=item_counts)
     update_inventory()
-
+def use_map(f):
+    def use_map_inner(x):
+        return [f(y) for y in x]
+    return use_map_inner
+def initialize_price_bound_history(price_bounds):
+    price_item_data = (
+        pipe(
+            [
+                pipe(
+                    price_bound.split('|'),
+                    use_map(int),
+                    lambda bounds: {
+                        'low': bounds[0],
+                        'high': bounds[1]},
+                    lambda bound_data: [
+                        {'item': item} | bound_data
+                        for item in items])
+                for price_bound, items in price_bounds.items()],
+            lambda separated_price_item_data: (
+                reduce(
+                    lambda a, x: a + x,
+                    separated_price_item_data))))
+    execute_many_queries(
+        query="""
+            insert into price_bound_history values(
+                null,
+                :item,
+                :low,
+                :high)""",
+        data=price_item_data)
 
 if __name__ == '__main__':
     clear_database()
@@ -196,10 +225,16 @@ if __name__ == '__main__':
             'iron_bar': item_count,
             'crystallized_energy': item_count,
             'golem_core': item_count})
+    initialize_price_bound_history({
+        '275|3000': [
+            'gold_runes', 'hardened_steel'],
+        '2|275': [
+            'broken_sword', 'ancient_pot', 'crystallized_energy',
+            'glass_lenses', 'golem_core', 'iron_bar', 'root', 'teeth_stone', 'vine']})
     print(
         query_data(
             """
-            select * from inventory_changes
+            select * from price_bound_history
             """
         )
     )
