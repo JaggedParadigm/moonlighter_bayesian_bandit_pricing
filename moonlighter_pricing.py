@@ -1,6 +1,7 @@
 from functools import reduce
 import sqlite3
 import pandas as pd
+import numpy as np
 
 def enforce_foreign_key_constraints(cursor):
     cursor.execute("pragma foreign_keys = on;")
@@ -217,6 +218,121 @@ def add_price_reaction_bounds(price_reaction_bounds):
             :expensive_upper)
         """,
         price_reaction_bounds)
+def get_empty_shelf_ids():
+    return (
+        query_data("""
+            select distinct
+                id
+            from shelves
+            where
+                item is null""")
+        ['id']
+        .pipe(lambda x: [int(y) for y in x.values]))
+def choose_item_and_price(
+    price_bounds: pd.DataFrame,
+    rng: np.random._generator.Generator,
+    ) -> dict:
+    """
+    Uses Thompson sampling on the item price bounds, which are effectively
+    posterior distributions of the probability of a price being optimal (highest
+    customer will accept), to select an item and price to place on a shelf
+    """
+    return (
+        price_bounds
+        .assign(**{
+            'sampled_price': lambda y: (
+                rng
+                .integers(
+                    y['low'],
+                    y['high'] + 1))})
+        .sort_values('sampled_price')
+        .tail(1)
+        .pipe(lambda y: {
+            'item': y['item'].values[0],
+            'price': int(y['sampled_price'].values[0])}))
+def get_inventory_item_price_bounds():
+    return (
+        query_data(
+            """
+            with max_item_rowids as (
+                select
+                    item,
+                    max(rowid) as max_rowid
+                from price_bound_history
+                group by
+                    item),
+            latest_price_bounds as (
+                select
+                    a.item,
+                    b.low,
+                    b.high
+                from max_item_rowids a
+                left outer join price_bound_history b on
+                    a.item = b.item
+                    and a.max_rowid = b.rowid),
+            inventory_items as (
+                select
+                    item
+                from inventory
+                where
+                    count > 0)
+
+            select
+                item,
+                low,
+                high
+            from latest_price_bounds
+            where
+                 item in inventory_items
+            """))
+def update_shelf_history(shelf_id, item, price):
+    query_data_without_output(
+        query=f"""
+            insert into shelf_history values(
+                :shelf_id,
+                :item,
+                :price)
+        """,
+        params={
+            'shelf_id': shelf_id,
+            'item': item,
+            'price': price})
+def add_item_2_shelf_and_set_price(shelf_id, item, price):
+    query_data_without_output(
+        query="""
+            update shelves
+            set
+                item = :item,
+                price = :price
+            where
+                id = :shelf_id;""",
+        params={
+            'shelf_id': shelf_id,
+            'item': item,
+            'price': price})
+def move_item_2_shelf_and_set_price(item, shelf_id, price):
+    bulk_update_inventory_changes(
+        item_changes={item: -1})
+    update_inventory()
+    update_shelf_history(
+        shelf_id=shelf_id,
+        item=item,
+        price=price)
+    add_item_2_shelf_and_set_price(
+        shelf_id=shelf_id,
+        item=item,
+        price=price)
+def fill_empty_shelves_w_priced_items(rng):
+    for empty_shelf_id in get_empty_shelf_ids():
+        suggested_shelf_changes = (
+            choose_item_and_price(
+                price_bounds=get_inventory_item_price_bounds(),
+                rng=rng)
+            | {'shelf_id': empty_shelf_id})
+        move_item_2_shelf_and_set_price(
+            item=suggested_shelf_changes['item'],
+            shelf_id=suggested_shelf_changes['shelf_id'],
+            price=suggested_shelf_changes['price'])
 
 
 if __name__ == '__main__':
@@ -260,10 +376,13 @@ if __name__ == '__main__':
                     'item', 'cheap_upper', 'perfect_upper',
                     'expensive_upper'])
             .to_dict('records')))
+    rng = np.random.default_rng(71071763)
+    fill_empty_shelves_w_priced_items(rng)
+    
     print(
         query_data(
             """
-            select * from price_reaction_bounds
+            select * from shelves
             """
         )
     )
