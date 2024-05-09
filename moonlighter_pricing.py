@@ -219,7 +219,8 @@ def add_price_reaction_bounds(price_reaction_bounds):
         """,
         price_reaction_bounds)
 def get_empty_shelf_ids():
-    return (
+    inventory_item_count = get_inventory_item_count()
+    empty_shelf_ids = (
         query_data("""
             select distinct
                 id
@@ -228,6 +229,11 @@ def get_empty_shelf_ids():
                 item is null""")
         ['id']
         .pipe(lambda x: [int(y) for y in x.values]))
+    return (
+        empty_shelf_ids if inventory_item_count >= len(empty_shelf_ids) else
+        # Use only the number of empty shelves for which there are inventory
+        # items to fill them with
+        empty_shelf_ids[:inventory_item_count])
 def choose_item_and_price(
     price_bounds: pd.DataFrame,
     rng: np.random._generator.Generator,
@@ -333,7 +339,224 @@ def fill_empty_shelves_w_priced_items(rng):
             item=suggested_shelf_changes['item'],
             shelf_id=suggested_shelf_changes['shelf_id'],
             price=suggested_shelf_changes['price'])
+def get_inventory_item_count():
+    return (
+        query_data("""
+            select
+                sum(count) as inventory_item_count
+            from inventory
+        """)
+        ['inventory_item_count']
+        .pipe(lambda x: int(x.values[0])))
+def get_shelf_item_count():
+    return (
+        query_data("""
+            select
+                count(*) as non_null_count
+            from shelves
+            where
+                item is not null
+        """)
+        ['non_null_count']
+        .pipe(lambda x: int(x.values[0])))
+def get_occupied_shelf_ids():
+    return (
+        query_data("""
+            select distinct
+                id
+            from shelves
+            where
+                item is not null
+        """)
+        ['id']
+        .pipe(lambda x: [int(y) for y in x.values]))
+def choose_random_occupied_shelf(rng):
+    return int(rng.choice(get_occupied_shelf_ids()))
+def get_random_shelf_reaction(rng):
+    return (
+        query_data(
+            """
+            with chosen_shelf_data as (
+                select
+                    *
+                from shelves
+                where
+                    id = :shelf_id)
 
+            select
+                a.id as shelf_id,
+                case
+                    when a.price <= b.cheap_upper
+                    then 'ecstatic'
+                    when b.cheap_upper < a.price and a.price <= b.perfect_upper
+                    then 'content'
+                    when b.perfect_upper < a.price and a.price <= b.expensive_upper
+                    then 'sad'
+                    else 'angry'
+                end as mood
+            from chosen_shelf_data a
+            left outer join price_reaction_bounds b on
+                a.item = b.item
+            """,
+            {'shelf_id': choose_random_occupied_shelf(rng)})
+        .to_dict('records')
+        [0])
+def record_reaction(shelf_id, mood):
+    query_data_without_output(
+        """
+        with shelf_data as (
+            select
+                id,
+                item,
+                price
+            from shelves
+            where
+                id = :shelf_id)
+
+        insert into reactions values(
+            :shelf_id,
+            (select item from shelf_data where id = :shelf_id),
+            (select price from shelf_data where id = :shelf_id),
+            :mood)
+        """,
+        {
+            'shelf_id': shelf_id,
+            'mood': mood})
+def update_price_bound_history():
+    query_data_without_output(
+        """
+        insert into price_bound_history
+        with latest_reaction as (
+            select
+                rowid as reaction_id,
+                item,
+                price,
+                mood
+            from reactions
+            where
+                rowid = (select max(rowid) from reactions)),
+        latest_reaction_item_price_bounds as (
+            select
+                item,
+                low,
+                high
+            from price_bound_history
+            where
+                item = (select item from latest_reaction)
+                and rowid = (
+                    select
+                        max(rowid)
+                    from price_bound_history
+                    where
+                        item = (select item from latest_reaction))),
+
+        price_bounds_w_reaction as (
+            select
+                a.reaction_id,
+                a.item,
+                a.price,
+                a.mood,
+                b.low,
+                b.high
+            from latest_reaction a
+            left outer join latest_reaction_item_price_bounds b on
+                a.item = b.item)
+
+        select
+            reaction_id,
+            item,
+            case
+                when mood in ('content', 'ecstatic')
+                then price + 1
+                when mood = 'sad' and low != high
+                then price
+                else low
+            end as low,
+            case
+                when mood = 'angry' and low != high
+                then price - 1
+                else high
+            end as high
+        from price_bounds_w_reaction""")
+def get_shelf_item_and_price(shelf_id):
+    return (
+        query_data(
+            """
+            select
+                item,
+                price
+            from shelves
+            where
+                id = :shelf_id
+            """,
+            {'shelf_id': shelf_id})
+        .to_dict('records')
+        [0])
+def empty_shelf(shelf_id):
+    query_data_without_output(
+        query="""
+            update shelves
+            set
+                item = null,
+                price = null
+            where
+                id = :shelf_id;""",
+        params={'shelf_id': shelf_id})
+    query_data_without_output(
+        query=f"""
+            insert into shelf_history values(
+                :shelf_id,
+                null,
+                null)
+        """,
+        params={
+            'shelf_id': shelf_id})
+def get_price_bound_violating_shelf_ids():
+    return (
+        query_data(
+            """
+            with latest_item_rowids as (
+                select
+                    max(rowid) as max_rowid,
+                    item
+                from price_bound_history
+                group by
+                    item),
+            latest_price_bounds as (
+                select
+                    a.item,
+                    b.low,
+                    b.high
+                from latest_item_rowids a
+                left outer join price_bound_history b on
+                    a.max_rowid = b.rowid
+                    and a.item = b.item)
+            select
+                a.id
+            from shelves a
+            left outer join latest_price_bounds b on
+                a.item = b.item
+            where
+                a.price < b.low
+                or a.price > b.high
+            """
+        )
+        ['id']
+        .pipe(lambda x: [int(y) for y in x.values]))
+def replace_items_on_shelf_violating_price_bounds():
+    for violating_shelf_id in get_price_bound_violating_shelf_ids():
+        violating_shelf_item_and_price = get_shelf_item_and_price(violating_shelf_id)
+        empty_shelf(shelf_id=violating_shelf_id)
+        add_items_2_inventory(
+            item_counts={violating_shelf_item_and_price['item']: 1})
+        violating_shelf_replacement_and_price = (
+            choose_item_and_price(
+                price_bounds=get_inventory_item_price_bounds(),
+                rng=rng))
+        move_item_2_shelf_and_set_price(
+            item=violating_shelf_replacement_and_price['item'],
+            shelf_id=violating_shelf_id,
+            price=violating_shelf_replacement_and_price['price'])
 
 if __name__ == '__main__':
     clear_database()
@@ -378,11 +601,21 @@ if __name__ == '__main__':
             .to_dict('records')))
     rng = np.random.default_rng(71071763)
     fill_empty_shelves_w_priced_items(rng)
-    
-    print(
-        query_data(
-            """
-            select * from shelves
-            """
-        )
-    )
+    inventory_item_count = get_inventory_item_count()
+    shelf_item_count = get_shelf_item_count()
+    while inventory_item_count or shelf_item_count:
+        shelf_reaction = get_random_shelf_reaction(rng)
+        record_reaction(
+            shelf_id=shelf_reaction['shelf_id'],
+            mood=shelf_reaction['mood'])
+        update_price_bound_history()
+        if shelf_reaction['mood'] == 'angry':
+            add_items_2_inventory(
+                item_counts={
+                    get_shelf_item_and_price(shelf_id=shelf_reaction['shelf_id'])['item']: 1})
+        empty_shelf(shelf_id=shelf_reaction['shelf_id'])
+        fill_empty_shelves_w_priced_items(rng)
+        replace_items_on_shelf_violating_price_bounds()
+        inventory_item_count = get_inventory_item_count()
+        shelf_item_count = get_shelf_item_count()
+    print(query_data('select * from shelves'))
