@@ -617,5 +617,4 @@ if __name__ == '__main__':
         fill_empty_shelves_w_priced_items(rng)
         replace_items_on_shelf_violating_price_bounds()
         inventory_item_count = get_inventory_item_count()
-        shelf_item_count = get_shelf_item_count()
-    print(query_data('select * from shelves'))
+        shelf_item_count = get_shelf_item_count()    
