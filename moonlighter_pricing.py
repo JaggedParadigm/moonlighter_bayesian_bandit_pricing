@@ -251,7 +251,8 @@ def choose_item_and_price(
                 .integers(
                     y['low'],
                     y['high'] + 1))})
-        .sort_values('sampled_price')
+        .pipe(lambda x: x[x['sampled_price'] == x['sampled_price'].max()])
+        .sample(frac=1, random_state=rng.integers(0, 1e8))
         .tail(1)
         .pipe(lambda y: {
             'item': y['item'].values[0],
@@ -617,4 +618,4 @@ if __name__ == '__main__':
         fill_empty_shelves_w_priced_items(rng)
         replace_items_on_shelf_violating_price_bounds()
         inventory_item_count = get_inventory_item_count()
-        shelf_item_count = get_shelf_item_count()    
+        shelf_item_count = get_shelf_item_count()
