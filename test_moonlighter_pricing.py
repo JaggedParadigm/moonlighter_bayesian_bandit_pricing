@@ -5,8 +5,7 @@ from moonlighter_pricing import (
     move_allowed_tables_to_end,
     pipe,
     use_map,
-    choose_item_and_price
-)
+    choose_item_and_price)
 
 def test_choose_item_and_price():
     assert (
