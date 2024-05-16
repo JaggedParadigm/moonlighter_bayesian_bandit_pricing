@@ -409,7 +409,11 @@ def get_occupied_shelf_ids():
         ['id']
         .pipe(lambda x: [int(y) for y in x.values]))
 def choose_random_occupied_shelf(rng):
-    return int(rng.choice(get_occupied_shelf_ids()))
+    return (
+        pipe(
+            get_occupied_shelf_ids(),
+            rng.choice,
+            int))
 def get_random_shelf_reaction(rng):
     return (
         query_data(
