@@ -112,6 +112,15 @@ def initialize_database():
             mood text not null,
             foreign key (mood) references allowed_moods(mood)
         ) strict;
+
+        create table if not exists thompson_competitions (
+            competition_ind integer not null,
+            item text not null,
+            price_lower_bound integer not null,
+            price_upper_bound integer not null,
+            sampled_price integer not null
+        ) strict;
+
         create table if not exists price_bound_history (
             reaction_id integer,
             item text not null,
@@ -234,15 +243,30 @@ def get_empty_shelf_ids():
         # Use only the number of empty shelves for which there are inventory
         # items to fill them with
         empty_shelf_ids[:inventory_item_count])
-def choose_item_and_price(
-    price_bounds: pd.DataFrame,
-    rng: np.random._generator.Generator,
-    ) -> dict:
-    """
-    Uses Thompson sampling on the item price bounds, which are effectively
-    posterior distributions of the probability of a price being optimal (highest
-    customer will accept), to select an item and price to place on a shelf
-    """
+def add_thompson_competition(competition_data):
+    # print(competition_data)
+    execute_many_queries(
+        """
+        insert into thompson_competitions values(
+            :competition_ind,
+            :item,
+            :price_lower_bound,
+            :price_upper_bound,
+            :sampled_price)
+        """,
+        competition_data)
+def get_next_competition_index():
+    return (
+        query_data("""
+            select
+                max(competition_ind) as max_competition_ind
+            from thompson_competitions
+        """)
+        ['max_competition_ind']
+        .pipe(lambda x: (
+            int(x.values[0]) + 1 if x.values[0] is not None else
+            0)))
+def get_thompson_competition(price_bounds, rng, next_competition_index):
     return (
         price_bounds
         .assign(**{
@@ -250,13 +274,39 @@ def choose_item_and_price(
                 rng
                 .integers(
                     y['low'],
-                    y['high'] + 1))})
+                    y['high'] + 1)),
+            'competition_ind': next_competition_index})
+        .rename(
+            columns={
+                'low': 'price_lower_bound',
+                'high': 'price_upper_bound'})
+        [['competition_ind', 'item', 'price_lower_bound', 'price_upper_bound', 'sampled_price']])
+def get_thompson_sampled_item_and_price(competition_data, rng):
+    return (
+        competition_data
         .pipe(lambda x: x[x['sampled_price'] == x['sampled_price'].max()])
         .sample(frac=1, random_state=rng.integers(0, 1e8))
         .tail(1)
         .pipe(lambda y: {
             'item': y['item'].values[0],
             'price': int(y['sampled_price'].values[0])}))
+# def choose_item_and_price(
+#     price_bounds: pd.DataFrame,
+#     rng: np.random._generator.Generator,
+#     ) -> dict:
+#     """
+#     Uses Thompson sampling on the item price bounds, which are effectively
+#     posterior distributions of the probability of a price being optimal (highest
+#     customer will accept), to select an item and price to place on a shelf
+#     """
+#     competition_data = (
+#         get_thompson_competition(
+#             price_bounds=price_bounds,
+#             rng=rng,
+#             next_competition_id=get_next_competition_index()))
+#     add_thompson_competition(
+#         competition_data=competition_data.to_dict('records'))
+#     return get_thompson_sampled_item_and_price(competition_data, rng)
 def get_inventory_item_price_bounds():
     return (
         query_data(
@@ -331,11 +381,24 @@ def move_item_2_shelf_and_set_price(item, shelf_id, price):
         price=price)
 def fill_empty_shelves_w_priced_items(rng):
     for empty_shelf_id in get_empty_shelf_ids():
-        suggested_shelf_changes = (
-            choose_item_and_price(
+        competition_data = (
+            get_thompson_competition(
                 price_bounds=get_inventory_item_price_bounds(),
+                rng=rng,
+                next_competition_index=get_next_competition_index()))
+        add_thompson_competition(
+            competition_data=competition_data.to_dict('records'))
+        suggested_shelf_changes = (
+            get_thompson_sampled_item_and_price(
+                competition_data=competition_data,
                 rng=rng)
             | {'shelf_id': empty_shelf_id})
+
+        # suggested_shelf_changes = (
+        #     choose_item_and_price(
+        #         price_bounds=get_inventory_item_price_bounds(),
+        #         rng=rng)
+        #     | {'shelf_id': empty_shelf_id})
         move_item_2_shelf_and_set_price(
             item=suggested_shelf_changes['item'],
             shelf_id=suggested_shelf_changes['shelf_id'],
@@ -550,10 +613,21 @@ def replace_items_on_shelf_violating_price_bounds():
         empty_shelf(shelf_id=violating_shelf_id)
         add_items_2_inventory(
             item_counts={violating_shelf_item_and_price['item']: 1})
-        violating_shelf_replacement_and_price = (
-            choose_item_and_price(
+        competition_data = (
+            get_thompson_competition(
                 price_bounds=get_inventory_item_price_bounds(),
+                rng=rng,
+                next_competition_index=get_next_competition_index()))
+        add_thompson_competition(
+            competition_data=competition_data.to_dict('records'))
+        violating_shelf_replacement_and_price = (
+            get_thompson_sampled_item_and_price(
+                competition_data=competition_data,
                 rng=rng))
+        # violating_shelf_replacement_and_price = (
+        #     choose_item_and_price(
+        #         price_bounds=get_inventory_item_price_bounds(),
+        #         rng=rng))
         move_item_2_shelf_and_set_price(
             item=violating_shelf_replacement_and_price['item'],
             shelf_id=violating_shelf_id,
