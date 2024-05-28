@@ -4,6 +4,9 @@ Moonlighter market simulation by using the Bayesian bandit method.
 
 I've also included some visualizations of data generated during this process.
 
+For a detailed write-up see the corresponding
+[article](https://cmshymansky.com/MoonlighterBayesianBanditsPricing/).
+
 # How to use
 Install miniconda then run this command in the main directory:
 ```
